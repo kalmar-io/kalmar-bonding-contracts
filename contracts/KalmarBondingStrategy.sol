@@ -40,9 +40,8 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         uint256 discount;
     }
     // Kalmar Token
-    address public constant kalm = 0x4BA0057f784858a48fe351445C672FF2a3d43515;
-    address public constant chainlink = 0xcBb98864Ef56E9042e7d2efef76141f15731B82f; // pricefeed for token
-    address public constant lp = 0xb7890ab80570750564a810eF6F214f1893Feb602; // kalm-busd
+    address public constant kalm = 0xF874EEbd75F4D63E88bDFdf3aEacA02df4a86C56;
+    address public constant chainlink = 0xEBE676ee90Fe1112671f19b6B7459bC678B67e8a; // pricefeed for token
     // Buying Bond as token
     IERC20 public immutable stakingToken;
     // Treasury address
@@ -54,13 +53,13 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     // Total burn of staking token
     uint256 public totalStakingBurn;
     // Sending staking token to burnAddress for buyback or burn
-    address public burnAddress;
+    address public immutable burnAddress;
 
     uint256 public constant DISCOUNT_FACTOR = 1e6;
     uint256 public constant DISCOUNT_MAX = 80000;
     uint256 public constant BONDPERDAY_MAX = 5000000000000000000000; // max 5000 kalm
     uint256 public constant BONDPERDAY_MIN = 500000000000000000000; // min 500 kalm
-    address admin;
+
     mapping(address => LockedBalance[]) private userLocks;
     BondingEmission[] public bondingEmission;
 
@@ -72,10 +71,12 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         uint256 _endBondingTime,
         uint256 _maxBondingSell,
         uint256 _discount,
-        address _treasury
+        address _treasury,
+        address _burnAddress
     ) public {
         stakingToken = IERC20(_stakingToken);
         treasury = _treasury;
+        burnAddress = _burnAddress;
         require(_endBondingTime > _startBondingTime, "endTime > startTime!");
         bondingEmission.push(
           BondingEmission({
@@ -160,13 +161,16 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
       // calculate bond per staking token amount
       uint256 userBondValue = _calculateBondPerToken(amount);
       uint256 length = bondingEmission.length;
+      uint256 newCurrSold = bondingEmission[length-1].currentSold.add(userBondValue);
+      require(block.timestamp > bondingEmission[length-1].startBondingTime, "Not starting yet");
       require(block.timestamp < bondingEmission[length-1].endBondingTime, "Ended bond sell");
-      require(bondingEmission[length-1].currentSold + userBondValue <=  bondingEmission[length-1].maxBondingSell, "Over bonding limit amount");
+      require(newCurrSold <=  bondingEmission[length-1].maxBondingSell, "Over bonding limit amount");
       // get kalm to from treasury for vest
       IERC20(kalm).safeTransferFrom(treasury, address(this), userBondValue);
-      totalBondSold += userBondValue;
+      uint256 newTotalBondSold = totalBondSold.add(userBondValue);
+      totalBondSold = newTotalBondSold;
       userLocks[msg.sender].push(LockedBalance({amount: userBondValue, unlockTime: block.timestamp + lockDuration}));
-      bondingEmission[length-1].currentSold += userBondValue;
+      bondingEmission[length-1].currentSold = newCurrSold;
       // send stakingToken to burn address
       _burn(amount);
 
@@ -200,8 +204,8 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
       uint256 _discount
     ) external onlyOwner {
         uint256 length = bondingEmission.length;
+        require(_discount < DISCOUNT_MAX, "Discount must less than 8%");
         require(_maxBondingSell < BONDPERDAY_MAX && _maxBondingSell >= BONDPERDAY_MIN, "Bond sell in limit amount.");
-        /* require(block.timestamp > bondingEmission[length-1].endBondingTime, "Not finished last bonding time yet."); */
         require(_endBondingTime > _startBondingTime, "endTime > startTime!");
         bondingEmission.push(
           BondingEmission({
@@ -226,7 +230,7 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     }
 
     function _kalmPrice() internal view returns (uint256) {
-        IPancakeswapV2Pair pair = IPancakeswapV2Pair(lp);
+        IPancakeswapV2Pair pair = IPancakeswapV2Pair(address(stakingToken));
         address other = pair.token0() == kalm ? pair.token1() : pair.token0();
         (uint256 Res0, uint256 Res1, ) = pair.getReserves();
         (uint256 kalmReserve, uint256 otherReserve) = pair.token0() == kalm ? (Res0, Res1) : (Res1, Res0);
@@ -247,7 +251,7 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
 
     function _getLpPrice() internal view returns(uint256)
     {
-      IPancakeswapV2Pair pair = IPancakeswapV2Pair(lp);
+      IPancakeswapV2Pair pair = IPancakeswapV2Pair(address(stakingToken));
       address other = pair.token0() == kalm ? pair.token1() : pair.token0();
       (uint256 Res0, uint256 Res1,) = pair.getReserves();
       (uint256 kalmReserve, uint256 otherReserve) = pair.token0() == kalm ? (Res0, Res1) : (Res1, Res0);
@@ -275,17 +279,9 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     // Added to support recovering LP Rewards from other systems such as BAL to be distributed to holders
     function recoverERC20(address tokenAddress, uint256 tokenAmount) external onlyOwner {
         require(tokenAddress != address(stakingToken), "Cannot withdraw staking token");
+        require(tokenAddress != address(kalm), "Cannot withdraw kalm token");
         IERC20(tokenAddress).safeTransfer(owner(), tokenAmount);
         emit Recovered(tokenAddress, tokenAmount);
-    }
-
-    /**
-     * @notice Sets burn address
-     * @dev Only callable by the contract admin.
-     */
-    function setBurnAddress(address _burnAddr) external onlyOwner {
-        burnAddress = _burnAddr;
-        emit BurnAddressSet(_burnAddr);
     }
 
     /**
@@ -325,6 +321,5 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     event Recovered(address token, uint256 amount);
     event Pause();
     event Unpause();
-    event BurnAddressSet(address burnAddress);
     event UpdatedBondingEmission(uint256 index, uint256 startTime, uint256 endTime, uint256 maxSell);
 }

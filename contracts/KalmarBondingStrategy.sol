@@ -63,6 +63,11 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     mapping(address => LockedBalance[]) private userLocks;
     BondingEmission[] public bondingEmission;
 
+    // Last lp price
+    uint256 public lpPriceInUSD;
+    // admin
+    address admin;
+
     /* ========== CONSTRUCTOR ========== */
 
     constructor(
@@ -99,6 +104,14 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         _;
     }
 
+    /**
+     * @notice Checks if the msg.sender is the admin address
+     */
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "admin: wut?");
+        _;
+    }
+
     /* ========== VIEWS ========== */
     function emissionIndex() external view returns (uint256) {
         uint256 length = bondingEmission.length;
@@ -115,10 +128,6 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
 
     function bondPriceInUSD() external view returns (uint256) {
         return _bondPrice();
-    }
-
-    function lpPriceInUSD() external view returns (uint256) {
-        return _getLpPrice();
     }
 
     function calculateBondPerToken(uint256 amount) external view returns (uint256) {
@@ -220,6 +229,17 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         emit UpdatedBondingEmission(length,_startBondingTime,_endBondingTime,_maxBondingSell);
     }
 
+    function updateLpPrice() external onlyAdmin {
+      uint256 currentPrice = _getLpPrice();
+      uint256 oldPrice = lpPriceInUSD;
+      if(lpPriceInUSD == 0){
+        lpPriceInUSD = currentPrice;
+      }else{
+        // update price
+        lpPriceInUSD = (currentPrice.add(oldPrice)).div(2);
+      }
+    }
+
     /* ========== RESTRICTED FUNCTIONS ========== */
     function _usdTokenPrice() internal view returns (uint256) {
       int256 ans = IChainlinkAggregator(chainlink).latestAnswer();
@@ -266,7 +286,7 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     }
 
     function _calculateBondPerToken(uint256 _amount) internal view returns (uint256) {
-      uint256 buyAmountUsd = _amount.mul(_getLpPrice());
+      uint256 buyAmountUsd = _amount.mul(lpPriceInUSD);
       uint256 amountBond = buyAmountUsd.div(_bondPrice());
       return amountBond;
     }
@@ -314,6 +334,16 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         return size > 0;
     }
 
+    /**
+     * @notice Sets admin address
+     * @dev Only callable by the contract owner.
+     */
+    function setAdmin(address _admin) external onlyOwner {
+        require(_admin != address(0), "Cannot be zero address");
+        admin = _admin;
+        emit AdminSet(_admin);
+    }
+
     /* ========== EVENTS ========== */
 
     event Buy(address indexed user, uint256 amount);
@@ -322,4 +352,5 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     event Pause();
     event Unpause();
     event UpdatedBondingEmission(uint256 index, uint256 startTime, uint256 endTime, uint256 maxSell);
+    event AdminSet(address admin);
 }

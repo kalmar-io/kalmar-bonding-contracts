@@ -40,14 +40,14 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         uint256 discount;
     }
     // Kalmar Token
-    address public constant kalm = 0xF874EEbd75F4D63E88bDFdf3aEacA02df4a86C56;
+    address public constant kalm = 0x4BA0057f784858a48fe351445C672FF2a3d43515;
     address public constant chainlink = 0xEBE676ee90Fe1112671f19b6B7459bC678B67e8a; // pricefeed for token
     // Buying Bond as token
     IERC20 public immutable stakingToken;
     // Treasury address
     address public immutable treasury;
     // Duration of lock period
-    uint256 public constant lockDuration = 60 * 15;
+    uint256 public constant lockDuration = 86400 * 5;
     // Total kalm sold
     uint256 public totalBondSold;
     // Total burn of staking token
@@ -65,6 +65,8 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
 
     // Last lp price
     uint256 public lpPriceInUSD;
+    // Last kalm price
+    uint256 public kalmPriceInUSD;
     // admin
     address admin;
 
@@ -120,10 +122,6 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
 
     function usdPrice() external view returns (uint256) {
         return _usdTokenPrice();
-    }
-
-    function kalmPriceInUSD() external view returns (uint256) {
-        return _kalmPrice();
     }
 
     function bondPriceInUSD() external view returns (uint256) {
@@ -229,13 +227,17 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         emit UpdatedBondingEmission(length,_startBondingTime,_endBondingTime,_maxBondingSell);
     }
 
-    function updateLpPrice() external onlyAdmin {
+    function updatePrice() external onlyAdmin {
       uint256 currentPrice = _getLpPrice();
+      uint256 currkalmPrice = _kalmPrice();
       uint256 oldPrice = lpPriceInUSD;
+      uint256 oldKalmPrice = kalmPriceInUSD;
       if(lpPriceInUSD == 0){
         lpPriceInUSD = currentPrice;
+        kalmPriceInUSD = currkalmPrice;
       }else{
         // update price
+        kalmPriceInUSD = (currkalmPrice.add(oldKalmPrice)).div(2);
         lpPriceInUSD = (currentPrice.add(oldPrice)).div(2);
       }
     }
@@ -245,8 +247,8 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
       int256 ans = IChainlinkAggregator(chainlink).latestAnswer();
       uint256 price = uint256(ans).mul(1e10);
       return price;
-      /* uint256 price = 1e18;
-      return price; */
+      // uint256 price = 1e18;
+      // return price;
     }
 
     function _kalmPrice() internal view returns (uint256) {
@@ -264,8 +266,8 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
 
     function _bondPrice() internal view returns (uint256) {
       uint256 length = bondingEmission.length;
-      uint256 priceDiscount = _kalmPrice().mul(bondingEmission[length-1].discount).div(DISCOUNT_FACTOR);
-      uint256 bondPrice = _kalmPrice() - priceDiscount;
+      uint256 priceDiscount = kalmPriceInUSD.mul(bondingEmission[length-1].discount).div(DISCOUNT_FACTOR);
+      uint256 bondPrice = kalmPriceInUSD.sub(priceDiscount);
       return bondPrice;
     }
 
@@ -279,9 +281,9 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
 
       uint totalSupply = pair.totalSupply();
       uint256 totalOtherPrice = ((otherReserve*1e18)/(10**decimalsOther)) * _usdTokenPrice();
-      uint256 totalKalmPrice = kalmReserve * _kalmPrice();
+      uint256 totalKalmPrice = kalmReserve.mul(_kalmPrice());
 
-      uint256 lpPrice = (totalOtherPrice + totalKalmPrice) / totalSupply;
+      uint256 lpPrice = (totalOtherPrice.add(totalKalmPrice)).div(totalSupply);
       return lpPrice;
     }
 

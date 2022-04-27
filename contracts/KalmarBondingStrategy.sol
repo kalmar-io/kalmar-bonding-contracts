@@ -13,6 +13,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IChainlinkAggregator.sol";
 import "./interfaces/IPancakeswapV2Pair.sol";
 import "./interfaces/IERC20Detailed.sol";
+import "./interfaces/IKalmOraclePrice.sol";
 
 contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     using SafeMath for uint256;
@@ -57,18 +58,16 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
 
     uint256 public constant DISCOUNT_FACTOR = 1e6;
     uint256 public constant DISCOUNT_MAX = 80000;
-    uint256 public constant BONDPERDAY_MAX = 5000000000000000000000; // max 5000 kalm
-    uint256 public constant BONDPERDAY_MIN = 500000000000000000000; // min 500 kalm
+    uint256 public constant BONDPERDAY_MAX = 5000 * 1e18; // max 5000 kalm
+    uint256 public constant BONDPERDAY_MIN = 500 * 1e18; // min 500 kalm
 
     mapping(address => LockedBalance[]) private userLocks;
     BondingEmission[] public bondingEmission;
 
-    // Last lp price
-    uint256 public lpPriceInUSD;
-    // Last kalm price
-    uint256 public kalmPriceInUSD;
     // admin
     address admin;
+    // kalm oracle address
+    address kalmOracle; 
 
     /* ========== CONSTRUCTOR ========== */
 
@@ -124,8 +123,16 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         return _usdTokenPrice();
     }
 
+    function kalmPriceInUSD() external view returns (uint256) {
+        return _kalmPrice();
+    }
+
     function bondPriceInUSD() external view returns (uint256) {
         return _bondPrice();
+    }
+
+    function lpPriceInUSD() external view returns (uint256) {
+        return _getLpPrice();
     }
 
     function calculateBondPerToken(uint256 amount) external view returns (uint256) {
@@ -227,19 +234,8 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         emit UpdatedBondingEmission(length,_startBondingTime,_endBondingTime,_maxBondingSell);
     }
 
-    function updatePrice() external onlyAdmin {
-      uint256 currentPrice = _getLpPrice();
-      uint256 currkalmPrice = _kalmPrice();
-      uint256 oldPrice = lpPriceInUSD;
-      uint256 oldKalmPrice = kalmPriceInUSD;
-      if(lpPriceInUSD == 0){
-        lpPriceInUSD = currentPrice;
-        kalmPriceInUSD = currkalmPrice;
-      }else{
-        // update price
-        kalmPriceInUSD = (currkalmPrice.add(oldKalmPrice)).div(2);
-        lpPriceInUSD = (currentPrice.add(oldPrice)).div(2);
-      }
+    function setKalmPriceOracle(address _oracle) external onlyAdmin {
+      kalmOracle = _oracle;
     }
 
     /* ========== RESTRICTED FUNCTIONS ========== */
@@ -247,27 +243,19 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
       int256 ans = IChainlinkAggregator(chainlink).latestAnswer();
       uint256 price = uint256(ans).mul(1e10);
       return price;
-      // uint256 price = 1e18;
-      // return price;
     }
 
-    function _kalmPrice() internal view returns (uint256) {
-        IPancakeswapV2Pair pair = IPancakeswapV2Pair(address(stakingToken));
-        address other = pair.token0() == kalm ? pair.token1() : pair.token0();
-        (uint256 Res0, uint256 Res1, ) = pair.getReserves();
-        (uint256 kalmReserve, uint256 otherReserve) = pair.token0() == kalm ? (Res0, Res1) : (Res1, Res0);
-        uint256 decimalsOther = IERC20Detailed(other).decimals();
-        // amount
-        uint256 otherPERkalm = (1e18*otherReserve)/kalmReserve;
-        uint256 kalmPrice = (otherPERkalm*_usdTokenPrice())/(10**decimalsOther);
-
+    function _kalmPrice() internal view returns (uint256) 
+    {
+        uint256 kalmPrice = IKalmOraclePrice(kalmOracle).kalmPrice();
         return kalmPrice;
     }
 
     function _bondPrice() internal view returns (uint256) {
       uint256 length = bondingEmission.length;
-      uint256 priceDiscount = kalmPriceInUSD.mul(bondingEmission[length-1].discount).div(DISCOUNT_FACTOR);
-      uint256 bondPrice = kalmPriceInUSD.sub(priceDiscount);
+      uint256 kalmprice = _kalmPrice();
+      uint256 priceDiscount = kalmprice.mul(bondingEmission[length-1].discount).div(DISCOUNT_FACTOR);
+      uint256 bondPrice = kalmprice.sub(priceDiscount);
       return bondPrice;
     }
 
@@ -288,7 +276,7 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     }
 
     function _calculateBondPerToken(uint256 _amount) internal view returns (uint256) {
-      uint256 buyAmountUsd = _amount.mul(lpPriceInUSD);
+      uint256 buyAmountUsd = _amount.mul(_getLpPrice());
       uint256 amountBond = buyAmountUsd.div(_bondPrice());
       return amountBond;
     }

@@ -10,6 +10,8 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 
+import "./libs/Math.sol";
+
 import "./interfaces/IChainlinkAggregator.sol";
 import "./interfaces/IPancakeswapV2Pair.sol";
 import "./interfaces/IERC20Detailed.sol";
@@ -41,8 +43,8 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         uint256 discount;
     }
     // Kalmar Token
-    address public constant kalm = 0x4BA0057f784858a48fe351445C672FF2a3d43515;
-    address public constant chainlink = 0xEBE676ee90Fe1112671f19b6B7459bC678B67e8a; // pricefeed for token
+    address public immutable kalm;
+    address public immutable chainlink; // pricefeed for token
     // Buying Bond as token
     IERC20 public immutable stakingToken;
     // Treasury address
@@ -73,16 +75,20 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
 
     constructor(
         address _stakingToken,
+        address _kalm,
         uint256 _startBondingTime,
         uint256 _endBondingTime,
         uint256 _maxBondingSell,
+        address _chainlink,
         uint256 _discount,
         address _treasury,
         address _burnAddress
     ) public {
         stakingToken = IERC20(_stakingToken);
+        kalm = _kalm;
         treasury = _treasury;
         burnAddress = _burnAddress;
+        chainlink = _chainlink;
         require(_endBondingTime > _startBondingTime, "endTime > startTime!");
         bondingEmission.push(
           BondingEmission({
@@ -119,8 +125,8 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
         return length-1;
     }
 
-    function usdPrice() external view returns (uint256) {
-        return _usdTokenPrice();
+    function tokenPrice() external view returns (uint256) {
+        return _otherTokenPrice();
     }
 
     function kalmPriceInUSD() external view returns (uint256) {
@@ -239,10 +245,12 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
     }
 
     /* ========== RESTRICTED FUNCTIONS ========== */
-    function _usdTokenPrice() internal view returns (uint256) {
+    function _otherTokenPrice() internal view returns (uint256) {
       int256 ans = IChainlinkAggregator(chainlink).latestAnswer();
       uint256 price = uint256(ans).mul(1e10);
       return price;
+      // uint256 price = 1e18;
+      // return price;
     }
 
     function _kalmPrice() internal view returns (uint256) 
@@ -259,7 +267,7 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
       return bondPrice;
     }
 
-    function _getLpPrice() internal view returns(uint256)
+    function _fairAssetReserve() internal view returns(uint256 fairReserveKalm, uint256 fairReserveOther)
     {
       IPancakeswapV2Pair pair = IPancakeswapV2Pair(address(stakingToken));
       address other = pair.token0() == kalm ? pair.token1() : pair.token0();
@@ -267,9 +275,23 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
       (uint256 kalmReserve, uint256 otherReserve) = pair.token0() == kalm ? (Res0, Res1) : (Res1, Res0);
       uint256 decimalsOther = IERC20Detailed(other).decimals();
 
+      otherReserve = otherReserve.mul(1e18).div(10**decimalsOther);
+      uint256 k = kalmReserve.mul(otherReserve);
+      uint256 p = _kalmPrice().div(_otherTokenPrice());
+
+      fairReserveKalm = Math.sqrt(k.div(p));
+      fairReserveOther = Math.sqrt(k.mul(p));
+
+    }
+
+    function _getLpPrice() internal view returns(uint256)
+    {
+      IPancakeswapV2Pair pair = IPancakeswapV2Pair(address(stakingToken));
+      (uint256 fairReserveKalm, uint256 fairReserveOther) = _fairAssetReserve();
+
       uint totalSupply = pair.totalSupply();
-      uint256 totalOtherPrice = ((otherReserve*1e18)/(10**decimalsOther)) * _usdTokenPrice();
-      uint256 totalKalmPrice = kalmReserve.mul(_kalmPrice());
+      uint256 totalOtherPrice = fairReserveOther.mul(_otherTokenPrice());
+      uint256 totalKalmPrice = fairReserveKalm.mul(_kalmPrice());
 
       uint256 lpPrice = (totalOtherPrice.add(totalKalmPrice)).div(totalSupply);
       return lpPrice;

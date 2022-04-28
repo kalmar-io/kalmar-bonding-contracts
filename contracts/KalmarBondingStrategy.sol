@@ -277,10 +277,10 @@ contract KalmarBondingStrategy is ReentrancyGuard, Ownable, Pausable {
 
       otherReserve = otherReserve.mul(1e18).div(10**decimalsOther);
       uint256 k = kalmReserve.mul(otherReserve);
-      uint256 p = _kalmPrice().div(_otherTokenPrice());
+      uint256 p = _kalmPrice().mul(1e18).div(_otherTokenPrice());
 
-      fairReserveKalm = Math.sqrt(k.div(p));
-      fairReserveOther = Math.sqrt(k.mul(p));
+      fairReserveKalm = Math.sqrt(k.div(p)).mul(1e9);
+      fairReserveOther = Math.sqrt(k.mul(p)).div(1e9);
 
     }
 
